@@ -11,6 +11,7 @@ GZ_REGISTER_SENSOR_PLUGIN(GazeboRosIRCamera)
 
 GazeboRosIRCamera::GazeboRosIRCamera()
 {
+
 }
 
 GazeboRosIRCamera::~GazeboRosIRCamera()
@@ -80,13 +81,14 @@ void GazeboRosIRCamera::onNewScan(ConstLogicalCameraImagePtr& _msg)
   gazebo_ir_camera_plugin::IRCamera ir_cam_msg;
   ir_cam_msg.header.stamp = ros::Time::now();
   ir_cam_msg.header.frame_id = this->frame_name_;
-
+  ROS_INFO("New scan");
   math::Pose model_pose;
   for (int i = 0; i < _msg->model_size(); i++)
   {
     std::string model_name = _msg->model(i).name();
     auto model_ptr = this->world_ptr_->GetModel(model_name);
 
+    ROS_INFO_STREAM(model_name);
     // check has IR LEDs
     if (CheckContainIREmitter(model_ptr))
     {
@@ -96,11 +98,12 @@ void GazeboRosIRCamera::onNewScan(ConstLogicalCameraImagePtr& _msg)
 
       double dir = GetRangeToSensor(model_position);
       if (dir != -100000)
+      {
         ir_cam_msg.azimuthal_angles.push_back(dir);
+        this->scan_pub_.publish(ir_cam_msg);
+      }
     }
   }
-
-  this->scan_pub_.publish(ir_cam_msg);
 }
 
 double GazeboRosIRCamera::GetRangeToSensor(const math::Vector3 &pose)
