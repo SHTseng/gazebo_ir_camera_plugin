@@ -2,6 +2,8 @@
 #define GAZEBO_ROS_RFID_SENSOR_H
 
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
+#include <ros/advertise_options.h>
 
 #include <gazebo/common/Plugin.hh>
 #include <gazebo/sensors/LogicalCameraSensor.hh>
@@ -43,6 +45,13 @@ protected:
   virtual void onNewScan(ConstLogicalCameraImagePtr &_msg);
 
 private:
+
+  void Advertise();
+
+  void IRImageConnect();
+
+  void IRImageDisconnect();
+
   /// \brief Gaussian noise generator.
   /// \param mu offset value.
   /// \param sigma scaling value.
@@ -61,6 +70,10 @@ private:
   /// \brief ROS Publisher for rfid sensor data.
   ros::Publisher scan_pub_;
 
+  void CameraQueueThread();
+  boost::thread callback_queue_thread_;
+  ros::CallbackQueue camera_queue_;
+
   /// \brief frame name for the attached link
   std::string frame_name_;
 
@@ -68,6 +81,11 @@ private:
 	transport::NodePtr gz_node_;
 	/// \brief Subscribe to the logical camera in gazebo
 	transport::SubscriberPtr image_sub_;
+
+  void LoadThread();
+  boost::thread deferred_load_thread_;
+  event::EventT<void()> load_connection_;
+  int ir_camera_connect_count_;
 
 	/// \brief namespace for the plugin
 	std::string robot_namespace_;

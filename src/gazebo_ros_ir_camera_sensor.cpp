@@ -9,22 +9,24 @@ namespace gazebo
 
 GZ_REGISTER_SENSOR_PLUGIN(GazeboRosIRCamera)
 
-GazeboRosIRCamera::GazeboRosIRCamera()
+GazeboRosIRCamera::GazeboRosIRCamera():
+  ir_camera_connect_count_(0)
 {
 
 }
 
 GazeboRosIRCamera::~GazeboRosIRCamera()
 {
+  this->parent_sensor_->SetActive(false);
+  this->camera_queue_.clear();
+  this->camera_queue_.disable();
   this->ros_nh_->shutdown();
-	delete this->ros_nh_;
+  delete this->ros_nh_;
 }
 
 void GazeboRosIRCamera::Load(sensors::SensorPtr _parent, sdf::ElementPtr _sdf)
 {
-  ROS_INFO("Start IR Camera Plugin");
-
-	this->parent_sensor_ = std::dynamic_pointer_cast<sensors::LogicalCameraSensor>(_parent);
+  this->parent_sensor_ = std::dynamic_pointer_cast<sensors::LogicalCameraSensor>(_parent);
 	if (!this->parent_sensor_)
 	{
 		ROS_ERROR_NAMED("ir_camera", "IR camera parent is not LogicalCameraSensor");
@@ -51,29 +53,77 @@ void GazeboRosIRCamera::Load(sensors::SensorPtr _parent, sdf::ElementPtr _sdf)
     this->frame_name_ = _sdf->GetElement("frameName")->Get<std::string>();
   }
 
-	if (!ros::isInitialized())
+  this->ros_nh_ = new ros::NodeHandle(this->robot_namespace_ + this->parent_sensor_->Name());
+
+  this->deferred_load_thread_ = boost::thread(
+        boost::bind(&GazeboRosIRCamera::LoadThread, this));
+
+//  this->parent_sensor_->SetActive(true);
+
+  ROS_INFO_STREAM("Name: " << this->parent_sensor_->Name() <<
+                  ", Subscribling to Gazebo topic: " << this->parent_sensor_->Topic());
+}
+
+void GazeboRosIRCamera::LoadThread()
+{
+  if (!ros::isInitialized())
   {
     ROS_FATAL_STREAM("A ROS node for Gazebo has not been initialized,"
-        << "unable to load plugin. Load the Gazebo system plugin "
-        << "'libgazebo_ros_api_plugin.so' in the gazebo_ros package)");
+                     << "unable to load plugin. Load the Gazebo system plugin "
+                     << "'libgazebo_ros_api_plugin.so' in the gazebo_ros package)");
     return;
   }
 
-	this->gz_node_ = transport::NodePtr(new transport::Node());
-	this->gz_node_->Init(this->parent_sensor_->WorldName());
-	this->ros_nh_ = new ros::NodeHandle(this->robot_namespace_);
-  
-	this->image_sub_ = this->gz_node_->Subscribe(this->parent_sensor_->Topic(), 
-			&GazeboRosIRCamera::onNewScan, this);
+  this->parent_sensor_->SetActive(false);
 
-  this->scan_pub_ = this->ros_nh_->advertise<gazebo_ir_camera_plugin::IRCamera>(this->topic_name_, 1, true);
+  this->gz_node_ = transport::NodePtr(new transport::Node());
+  this->gz_node_->Init(this->parent_sensor_->WorldName());
 
+  this->callback_queue_thread_ = boost::thread(
+        boost::bind(&GazeboRosIRCamera::CameraQueueThread, this));
+
+  this->scan_pub_ = this->ros_nh_->advertise<gazebo_ir_camera_plugin::IRCamera>(
+        ros_nh_->getNamespace()+this->topic_name_, 1, true);
+//  load_connection_.Connect(boost::bind(&GazeboRosIRCamera::Advertise, this));
+//  load_connection_();
+//  ros::AdvertiseOptions ao = ros::AdvertiseOptions::create<gazebo_ir_camera_plugin::IRCamera>(
+//        this->topic_name_, 1,
+//        boost::bind(&GazeboRosIRCamera::IRImageConnect, this),
+//        boost::bind(&GazeboRosIRCamera::IRImageDisconnect, this),
+//        ros::VoidPtr(), &this->camera_queue_);
+
+//  this->scan_pub_ = this->ros_nh_->advertise(ao);
+  ROS_INFO_STREAM("Publishing to ROS topic: " << this->scan_pub_.getTopic());
+
+  this->image_sub_ = this->gz_node_->Subscribe(this->parent_sensor_->Topic(),
+                                               &GazeboRosIRCamera::onNewScan, this);
   this->parent_sensor_->SetActive(true);
+}
 
-  ROS_INFO_STREAM("Subscribling to gazebo topic: " << this->parent_sensor_->Topic());
-  ROS_INFO_STREAM("Publishing to ros topic: " << this->scan_pub_.getTopic());
+void GazeboRosIRCamera::Advertise()
+{
+  ros::AdvertiseOptions ao = ros::AdvertiseOptions::create<gazebo_ir_camera_plugin::IRCamera>(
+        this->topic_name_, 1,
+        boost::bind(&GazeboRosIRCamera::IRImageConnect, this),
+        boost::bind(&GazeboRosIRCamera::IRImageDisconnect, this),
+        ros::VoidPtr(), &this->camera_queue_);
 
-  ROS_INFO_STREAM("Load IR Camera complete.");
+  this->scan_pub_ = this->ros_nh_->advertise(ao);
+
+  ROS_INFO_STREAM("Publishing to ROS topic: " << this->scan_pub_.getTopic());
+}
+
+void GazeboRosIRCamera::IRImageConnect()
+{
+  this->ir_camera_connect_count_++;
+  this->parent_sensor_->SetActive(true);
+}
+
+void GazeboRosIRCamera::IRImageDisconnect()
+{
+  this->ir_camera_connect_count_--;
+  if (this->ir_camera_connect_count_ <= 0)
+    this->parent_sensor_->SetActive(false);
 }
 
 void GazeboRosIRCamera::onNewScan(ConstLogicalCameraImagePtr& _msg)
@@ -81,14 +131,15 @@ void GazeboRosIRCamera::onNewScan(ConstLogicalCameraImagePtr& _msg)
   gazebo_ir_camera_plugin::IRCamera ir_cam_msg;
   ir_cam_msg.header.stamp = ros::Time::now();
   ir_cam_msg.header.frame_id = this->frame_name_;
-  ROS_INFO("New scan");
+
+//  ROS_INFO_STREAM("scanned model: " << _msg->model_size());
   math::Pose model_pose;
   for (int i = 0; i < _msg->model_size(); i++)
   {
     std::string model_name = _msg->model(i).name();
     auto model_ptr = this->world_ptr_->GetModel(model_name);
 
-    ROS_INFO_STREAM(model_name);
+//    ROS_INFO_STREAM(_msg->model(i).name());
     // check has IR LEDs
     if (CheckContainIREmitter(model_ptr))
     {
@@ -104,6 +155,16 @@ void GazeboRosIRCamera::onNewScan(ConstLogicalCameraImagePtr& _msg)
       }
     }
   }
+}
+
+void GazeboRosIRCamera::CameraQueueThread()
+{
+  static const double timeout = 0.001;
+  while (this->ros_nh_->ok())
+  {
+    /// take care of callback queue
+    this->camera_queue_.callAvailable(ros::WallDuration(timeout));
+}
 }
 
 double GazeboRosIRCamera::GetRangeToSensor(const math::Vector3 &pose)
@@ -134,12 +195,9 @@ bool GazeboRosIRCamera::CheckContainIREmitter(const physics::ModelPtr &model_p)
       if (sensor_p->Type() == "ray")
       {
         found = true;
-        break;
+        return found;
       }
     }
-
-    if (found)
-      break;
   }
   return found;
 }
